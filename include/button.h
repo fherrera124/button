@@ -3,7 +3,7 @@
   * @file           : button.h
   * @author         : Mauricio Barroso Benavides
   * @date           : Mar 20, 2022
-  * @brief          : This file contains all the definitios, data types and
+  * @brief          : This file contains all the definitions, data types and
   *                   function prototypes for button.c file
   ******************************************************************************
   * @attention
@@ -47,6 +47,7 @@ extern "C" {
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/queue.h"
 #include "freertos/timers.h"
 
 #include "driver/gpio.h"
@@ -59,6 +60,12 @@ typedef struct {
 	button_cb_t function;
 	void * arg;
 } button_function_t;
+
+typedef struct {
+  button_function_t short_f;  /*!< Short press callback function structure */
+  button_function_t medium_f; /*!< Medium press callback function structure */
+  button_function_t long_f;		/*!< Long press callback function structure */
+} f_cbs;
 
 typedef enum {
 	FALLING_MODE = 0,
@@ -75,32 +82,70 @@ typedef enum {
 
 /**/
 typedef enum {
-	SHORT_TIME  = 0,
-	MEDIUM_TIME,
-	LONG_TIME
-} button_time_e;
+	SHORT_PRESS = 0,
+	MEDIUM_PRESS,
+	LONG_PRESS
+} button_press_e;
 
+/* Struct definition of a button */
 typedef struct {
-	button_state_e state;				/*!< Button state */
-	button_mode_e mode;					/*!< Button mode activation */
+  button_state_e state;			/*!< Button state */
+	button_mode_e mode;				/*!< Button mode activation */
 	gpio_num_t gpio;					/*!< Button GPIO number */
-	TickType_t tick_counter;			/*!< Tick counter */
-	button_function_t short_function;	/*!< Short press callback function structure */
-	button_function_t medium_function;	/*!< Medium press callback function structure */
-	button_function_t long_function;	/*!< Long press callback function structure */
-	EventGroupHandle_t event_group;		/*!< Button FreeRTOS event group */
-	UBaseType_t task_priority;			/*!< Button FreeRTOS task priority */
-	uint32_t task_stack_size;			/*!< Button FreeRTOS task stack size */
-	TimerHandle_t timer;
+	TickType_t tick_counter;	/*!< Tick counter */
+	TimerHandle_t timer;			/*!< Handle of the software timer, used for debouncing */
+	QueueHandle_t queue;			/*!< Handle of the event queue */
+  f_cbs * cbs;							/*!< Optional pointer to callback function struct*/
+  void (*event_fn)(QueueHandle_t, TickType_t); /*!< Callback function responsible for writing into the queue */
 } button_t;
 
 /* Exported constants --------------------------------------------------------*/
 
 /* Exported macro ------------------------------------------------------------*/
+/* Button */
+#define BUTTON_SHORT_TICKS  pdMS_TO_TICKS(CONFIG_BUTTON_DEBOUNCE_SHORT_TIME)
+#define BUTTON_MEDIUM_TICKS pdMS_TO_TICKS(CONFIG_BUTTON_DEBOUNCE_MEDIUM_TIME)
+#define BUTTON_LONG_TICKS   pdMS_TO_TICKS(CONFIG_BUTTON_DEBOUNCE_LONG_TIME)
+
+/* Next macros are for compatibility between esp-idf and ESP8266-RTOS SDKs */
+
+/* Not (yet) defined in the ESP8266-RTOS SDK */
+#ifndef pdTICKS_TO_MS
+#define pdTICKS_TO_MS(xTicks) ((TickType_t)((uint64_t)(xTicks)*1000 / configTICK_RATE_HZ))
+#endif
+
+/* Diferent macros for printing inside an ISR routine */
+#ifndef ESP_DRAM_LOGI
+#define ESP_DRAM_LOGI ESP_EARLY_LOGI
+#endif
+#ifndef ESP_DRAM_LOGE
+#define ESP_DRAM_LOGE ESP_EARLY_LOGE
+#endif
+#ifndef ESP_DRAM_LOGD
+#define ESP_DRAM_LOGD ESP_EARLY_LOGD
+#endif
+#ifndef ESP_DRAM_LOGW
+#define ESP_DRAM_LOGW ESP_EARLY_LOGW
+#endif
 
 /* Exported functions prototypes ---------------------------------------------*/
 /**
   * @brief Initialize a button instance
+  *
+  * @param me Pointer to button_t structure
+  * @param gpio GPIO number to attach button
+  * @param queue Handle of a queue
+  *
+  * @retval
+  * 	- ESP_OK on success
+  * 	- ESP_ERR_INVALID_ARG if the argument is invalid
+  */
+esp_err_t button_init(button_t * const me,
+		gpio_num_t gpio,
+		QueueHandle_t queue);
+
+/**
+  * @brief Initialize a button instance creating a task
   *
   * @param me Pointer to button_t structure
   * @param gpio GPIO number to attach button
@@ -111,7 +156,7 @@ typedef struct {
   * 	- ESP_OK on success
   * 	- ESP_ERR_INVALID_ARG if the argument is invalid
   */
-esp_err_t button_init(button_t * const me,
+esp_err_t button_default_init(button_t * const me,
 		gpio_num_t gpio,
 		UBaseType_t task_priority,
 		uint32_t task_stack_size);
@@ -120,7 +165,7 @@ esp_err_t button_init(button_t * const me,
   * @brief Register a button callback function
   *
   * @param me Pointer to button_t structure
-  * @param time Button press time to register callback function
+  * @param press_e Button press event to register callback function
   * @param function Callback function code
   * @param arg Pointer to callback function argument
   *
@@ -130,7 +175,7 @@ esp_err_t button_init(button_t * const me,
   * 	- ESP_ERR_INVALID_ARG if the argument is invalid
   */
 esp_err_t button_register_cb(button_t * const me,
-		button_time_e time,
+		button_press_e press_e,
 		button_cb_t function,
 		void * arg);
 
@@ -138,14 +183,30 @@ esp_err_t button_register_cb(button_t * const me,
   * @brief Unregister a button callback function
   *
   * @param me Pointer to button_t structure
-  * @param time Button press time to unregister callback function
+  * @param press_e Button press event to unregister callback function
   *
   *
   * @retval
   * 	- ESP_OK on success
   * 	- ESP_ERR_INVALID_ARG if the argument is invalid
   */
-esp_err_t button_unregister_cb(button_t * const me, button_time_e time);
+esp_err_t button_unregister_cb(button_t * const me, button_press_e press_e);
+
+/**
+  * @brief Initialize a button with a given rotary encoder queue,
+  * see: https://github.com/fherrera124/esp32-rotary-encoder
+  *
+  * @param me Pointer to button_q_t structure
+  * @param gpio GPIO number to attach button
+  * @param queue Handle of the rotary encoder queue
+  *
+  * @retval
+  * 	- ESP_OK on success
+  * 	- ESP_ERR_INVALID_ARG if the argument is invalid
+  */
+esp_err_t re_button_init(button_t * const me,
+    gpio_num_t gpio,
+    QueueHandle_t queue);
 
 #ifdef __cplusplus
 }

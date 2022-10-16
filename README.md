@@ -1,6 +1,11 @@
 
 # ESP-IDF Button Component
 
+
+## NEW: Rotary encoder button
+- Added support for instantiating a rotary encoder button that will write press events to a FreeRTOS queue. That queue is shared with a rotary-encoder instance of the [esp32-rotary-encoder component](https://github.com/fherrera124/esp32-rotary-encoder). You can instantiate as many rotary encoder buttons as there are rotary encoders in your particular project.
+- Added some MACRO definitions to maintain compatibility with the ESP8266-RTOS-SDK library.
+
 ## Features
 - Each button can have three different callback functions depending on the time the button is pressed (short, medium and long)
 - Debounce algorithm is based on FSM (Finite State Machine), FreeRTOS software timers, FreeRTOS event groups and GPIO interrupts.

@@ -1,7 +1,7 @@
 /**
   ******************************************************************************
   * @file           : button.c
-  * @author         : Mauricio Barroso Benavides
+  * @authors        : Mauricio Barroso Benavides - Francisco Herrera
   * @date           : Mar 20, 2022
   * @brief          : This file provides code for the configuration and control
   *                   of bounce of the buttons instances
@@ -10,7 +10,7 @@
   *
   * MIT License
   *
-  * Copyright (c) 2022 Mauricio Barroso Benavides
+  * Copyright (c) 2022 Mauricio Barroso Benavides - Francisco Herrera
   *
   * Permission is hereby granted, free of charge, to any person obtaining a copy
   * of this software and associated documentation files (the "Software"), to
@@ -36,27 +36,24 @@
 /* Includes ------------------------------------------------------------------*/
 #include "button.h"
 #include "esp_log.h"
+#include "rotary_encoder.h" /* esp32-rotary-encoder component */
 
 /* External variables --------------------------------------------------------*/
 
 /* Private typedef -----------------------------------------------------------*/
 
 /* Private macro -------------------------------------------------------------*/
-/* Button event bits */
-#define BUTTON_SHORT_PRESS_BIT	BIT0
-#define BUTTON_MEDIUM_PRESS_BIT	BIT1
-#define BUTTON_LONG_PRESS_BIT	BIT2
 
-/* Button  */
-#define BUTTON_SHORT_TIME	CONFIG_BUTTON_DEBOUNCE_SHORT_TIME
-#define BUTTON_MEDIUM_TIME	CONFIG_BUTTON_DEBOUNCE_MEDIUM_TIME
-#define BUTTON_LONG_TIME	CONFIG_BUTTON_DEBOUNCE_LONG_TIME
+/* This button defaults to falling mode */
+#define PRESSED		 DOWN_STATE
+#define NOT_PRESSED UP_STATE
 
 /* Private function prototypes -----------------------------------------------*/
 static void IRAM_ATTR isr_handler(void * arg);
-static void button_task (void * arg);
-
+static void button_task(void * arg);
 static void timer_handler(TimerHandle_t timer);
+static void default_queue(QueueHandle_t queue, TickType_t ticks);
+static void rotary_queue(QueueHandle_t queue, TickType_t ticks);
 
 /* Private variables ---------------------------------------------------------*/
 /* Tag for debug */
@@ -65,28 +62,17 @@ static const char * TAG = "button";
 /* Exported functions --------------------------------------------------------*/
 esp_err_t button_init(button_t * const me,
 		gpio_num_t gpio,
-		UBaseType_t task_priority,
-		uint32_t task_stack_size) {
-	ESP_LOGI(TAG, "Initializing button component...");
+		QueueHandle_t queue) {
 
 	/* Error code variable */
 	esp_err_t ret;
 
-	/* Initialize callback variables */
-	me->short_function.function = NULL;
-	me->short_function.arg = NULL;
-	me->medium_function.function = NULL;
-	me->medium_function.arg = NULL;
-	me->long_function.function = NULL;
-	me->long_function.arg = NULL;
+	/* If no queue handle is passed by parameter, check
+	   if this button instance has already one */
+	if (queue == NULL && me->queue == NULL) {
+		ESP_LOGE(TAG, "Error in gpio number argument");
 
-	/* Create button event group */
-	me->event_group = xEventGroupCreate();
-
-	if(me->event_group == NULL) {
-		ESP_LOGE(TAG, "Error allocating memory to create event group");
-
-		return ESP_ERR_NO_MEM;
+		return ESP_ERR_INVALID_ARG;
 	}
 
 	/* Initialize button GPIO */
@@ -113,8 +99,8 @@ esp_err_t button_init(button_t * const me,
 	if(me->mode == FALLING_MODE) {
 		gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
 		gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-		me->state = DOWN_STATE;
-		gpio_conf.intr_type = GPIO_INTR_NEGEDGE;
+		me->state = NOT_PRESSED;
+		gpio_conf.intr_type = GPIO_INTR_ANYEDGE;
 	}
 //	else {
 //		gpio_conf.pull_up_en = GPIO_PULLUP_DISABLE;
@@ -132,7 +118,7 @@ esp_err_t button_init(button_t * const me,
 		return ret;
 	}
 
-	/* Install ISR service and add ISR handler */
+	/* Install ISR service */
 	ret = gpio_install_isr_service(0);
 
 	if(ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
@@ -141,7 +127,8 @@ esp_err_t button_init(button_t * const me,
 		return ret;
 	}
 
-	ret = gpio_isr_handler_add(me->gpio, isr_handler, (void *)me);
+	/* Add ISR handler */
+	ret = gpio_isr_handler_add(me->gpio, isr_handler, &me->timer);
 
 	if(ret != ESP_OK) {
 		ESP_LOGE(TAG, "Error adding GPIO ISR handler");
@@ -149,267 +136,296 @@ esp_err_t button_init(button_t * const me,
 		return ret;
 	}
 
-	/* Initialize tick counter variable */
-	me->tick_counter = 0;
+	return ESP_OK;
+}
 
-	/* Initialize button task variables */
-	me->task_priority = task_priority;
-	me->task_stack_size = task_stack_size;
+esp_err_t button_default_init(button_t *const me,
+		  gpio_num_t gpio,
+		  UBaseType_t task_priority,
+		  uint32_t task_stack_size) {
+	ESP_LOGI(TAG, "Initializing button component...");
+
+	/* Error code variable */
+	esp_err_t ret;
+
+	/* Initialize callback struct pointer */
+	me->cbs = NULL;
+
+	/* Attach the function responsible for writing
+	   the press event into the queue */
+	me->event_fn = default_queue;
+
+	/* Create button queue */
+	me->queue = xQueueCreate(1, sizeof(button_press_e));
+
+	if (me->queue == NULL) {
+		ESP_LOGE(TAG, "Error allocating memory to create queue");
+
+		return ESP_ERR_NO_MEM;
+	}
+
+	/* Setting up gpio interrupt */
+	ret = button_init(me, gpio, NULL);
+		
+	if (ret != ESP_OK) {
+		return ret;
+	}
+
+	/* Allocate memory for callback struct */
+	me->cbs = calloc(0, sizeof(f_cbs));
+
+	if (me->cbs == NULL) {
+		ESP_LOGE(TAG, "Error allocating memory for callback struct");
+
+		return ESP_ERR_NO_MEM;
+	}
+		
+	/* Register queue event function callback */
+	me->event_fn = default_queue;
 
 	/* Create RTOS task */
-    if(xTaskCreate(button_task,
-    		"Button Task",
-			me->task_stack_size,
-			(void *)me,
-			me->task_priority,
-			NULL) != pdPASS) {
+    if(pdPASS != xTaskCreate(button_task,
+    	"Button Task",
+		task_stack_size,
+		(void *)me,
+		task_priority,
+		NULL)) {
     	ESP_LOGE(TAG, "Error allocating memory to create task");
 
     	return ESP_ERR_NO_MEM;
     }
 
-    /* Creater FreeRTOS software timer to avoid bounce button */
-    me->timer = xTimerCreate("Test timer",
-    		pdMS_TO_TICKS(BUTTON_SHORT_TIME),
-			pdFALSE,
-			(void *)me,
-			timer_handler); /* todo: implement error handler */
+	/* Creater FreeRTOS software timer to avoid bounce button */
+	me->timer = xTimerCreate("Test timer",
+    		BUTTON_SHORT_TICKS,
+    		pdFALSE,
+    		(void *)me,
+    		timer_handler); /* todo: implement error handler */
 
 	/* Return error code */
 	return ret;
 }
 
-esp_err_t button_register_cb(button_t * const me,
-		button_time_e time,
+esp_err_t button_register_cb(button_t *const me,
+		button_press_e press_e,
 		button_cb_t function,
 		void * arg) {
 	ESP_LOGI(TAG, "Registering a callback for button...");
-
-	/* Error code variable */
-	esp_err_t ret;
 
 	if(function == NULL && arg == NULL) {
 		ESP_LOGI(TAG, "Error in function argument");
 		return ESP_ERR_INVALID_ARG;
 	}
 
-	/* Select callback by time */
-	switch(time) {
-		case SHORT_TIME:
-			me->short_function.function = function;
-			me->short_function.arg = arg;
+	if(me->cbs == NULL) {
+		ESP_LOGW(TAG, "No callback struct instance on this button. Skipping.");
+		return ESP_ERR_NOT_SUPPORTED;
+	}
+
+	/* Select callback by press duration */
+	switch(press_e) {
+		case SHORT_PRESS:
+			me->cbs->short_f.function = function;
+			me->cbs->short_f.arg = arg;
 
 			break;
 
-		case MEDIUM_TIME:
-			me->medium_function.function = function;
-			me->medium_function.arg = arg;
+		case MEDIUM_PRESS:
+			me->cbs->medium_f.function = function;
+			me->cbs->medium_f.arg = arg;
 
 			break;
 
-		case LONG_TIME:
-			me->long_function.function = function;
-			me->long_function.arg = arg;
+		case LONG_PRESS:
+			me->cbs->long_f.function = function;
+			me->cbs->long_f.arg = arg;
 
 			break;
 
 		default:
 			ESP_LOGI(TAG, "Invalid time value");
-			ret = ESP_ERR_INVALID_ARG;
-			break;
+			return ESP_ERR_INVALID_ARG;
 	}
 
-	/* Return error code */
-	return ret;
+	return ESP_OK;
 }
 
-esp_err_t button_unregister_cb(button_t * const me, button_time_e time) {
+esp_err_t button_unregister_cb(button_t * const me, button_press_e press_e) {
 	ESP_LOGI(TAG, "Initializing button component...");
 
-	/* Error code variable */
-	esp_err_t ret;
+	if (me->cbs == NULL) {
+		ESP_LOGW(TAG, "No callback struct instance on this button. Skipping.");
+		return ESP_ERR_NOT_SUPPORTED;
+	}
 
-	/* Select callback by time and clear button callback function and argument*/
-	switch(time) {
-		case SHORT_TIME:
-			me->short_function.function = NULL;
-			me->short_function.arg = NULL;
-
-			break;
-
-		case MEDIUM_TIME:
-			me->medium_function.function = NULL;
-			me->medium_function.arg = NULL;
+	/* Select callback by press duration and clear
+	   button callback function and argument */
+	switch(press_e) {
+		case SHORT_PRESS:
+			me->cbs->short_f.function = NULL;
+			me->cbs->short_f.arg = NULL;
 
 			break;
 
-		case LONG_TIME:
-			me->long_function.function = NULL;
-			me->long_function.arg = NULL;
+		case MEDIUM_PRESS:
+			me->cbs->medium_f.function = NULL;
+			me->cbs->medium_f.arg = NULL;
+
+			break;
+
+		case LONG_PRESS:
+			me->cbs->long_f.function = NULL;
+			me->cbs->long_f.arg = NULL;
 
 			break;
 
 		default:
 			ESP_LOGI(TAG, "Error in arg argument");
-			ret = ESP_ERR_INVALID_ARG;
-			break;
+			return ESP_ERR_INVALID_ARG;
 	}
 
-	/* Return error code */
-	return ret;
+	return ESP_OK;
 }
+
+esp_err_t re_button_init(button_t * me,
+			gpio_num_t gpio,
+			QueueHandle_t queue) {
+
+	/* Error code variable */
+	esp_err_t ret;
+
+	ret = button_init(me, gpio, queue);
+
+	if(ret != ESP_OK) {
+		return ret;
+	}
+
+	/* Attach the function responsible for writing
+	   the press event into the queue */
+	me->event_fn = rotary_queue;
+
+	return ESP_OK;
+}
+
 /* Private functions ---------------------------------------------------------*/
-static void IRAM_ATTR isr_handler(void * arg) {
-	button_t * button = (button_t *)arg;
+static void IRAM_ATTR isr_handler(void *arg) {
+	TimerHandle_t timer = *(TimerHandle_t *)arg;
 
-	static TickType_t elapsed_time = 0;
+	ESP_DRAM_LOGD(TAG, "ISR ROUTINE CALLED");
 
-	switch(button->state) {
-		case DOWN_STATE:
-			/* Disable button interrupt */
-			gpio_set_intr_type(button->gpio, GPIO_INTR_DISABLE);
-
-			/* Get initial tick counter */
-			button->tick_counter = xTaskGetTickCountFromISR();
-
-			/* Start debounce timer */
-			xTimerStartFromISR(button->timer, NULL);
-
-			break;
-		case UP_STATE:
-			/* Disable button interrupt */
-			gpio_set_intr_type(button->gpio, GPIO_INTR_DISABLE);
-
-			/* Calculate and print button elapsed time pressed */
-			elapsed_time = pdTICKS_TO_MS(xTaskGetTickCountFromISR() - button->tick_counter);
-			ESP_DRAM_LOGI(TAG, "button %d pressed for %d ms", button->gpio, elapsed_time);
-
-			/* Execute function callback according button elapsed time pressed */
-			if(elapsed_time >= BUTTON_SHORT_TIME && elapsed_time < BUTTON_MEDIUM_TIME) {
-				xEventGroupSetBitsFromISR(button->event_group, BUTTON_SHORT_PRESS_BIT, NULL);
-			}
-			else if((elapsed_time >= BUTTON_MEDIUM_TIME && elapsed_time < BUTTON_LONG_TIME)) {
-				xEventGroupSetBitsFromISR(button->event_group, BUTTON_MEDIUM_PRESS_BIT, NULL);
-			}
-			else if(elapsed_time >= BUTTON_LONG_TIME) {
-				xEventGroupSetBitsFromISR(button->event_group, BUTTON_LONG_PRESS_BIT, NULL);
-			}
-			else {
-//				ESP_DRAM_LOGI(TAG, "button %d bounce", button->gpio);
-				break;
-			}
-
-			/* Reset button elapsed time pressed */
-			elapsed_time = 0;
-
-			/* Start debounce timer */
-			xTimerStartFromISR(button->timer, NULL);
-
-			break;
-
-		default:
-//			ESP_DRAM_LOGI(TAG, "button error");
-			break;
+	/* Start debounce timer */
+	BaseType_t task_woken = pdFALSE;
+	xTimerStartFromISR(timer, &task_woken);
+	if (task_woken) {
+		portYIELD_FROM_ISR();
 	}
-
-	portYIELD_FROM_ISR();
 }
 
-static void button_task (void * arg) {
-	button_t * button = (button_t *)arg;
-	EventBits_t bits;
-	const EventBits_t bits_wait_for = (BUTTON_SHORT_PRESS_BIT |
-			BUTTON_MEDIUM_PRESS_BIT |
-			BUTTON_LONG_PRESS_BIT);
+static void button_task(void *arg) {
+	button_t * btn = (button_t *)arg;
+	button_press_e event;
 
-	for(;;) {
-		/* Wait until some bit is set */
-		bits = xEventGroupWaitBits(button->event_group,
-				bits_wait_for,
-				pdTRUE,
-				pdFALSE,
-				portMAX_DELAY);
+	while (pdTRUE == xQueueReceive(btn->queue, &event, portMAX_DELAY)) {
+		switch (event) {
+			case SHORT_PRESS:
+				ESP_LOGI(TAG, "BUTTON_SHORT_PRESS_BIT set");
+				// ESP_LOGI(TAG, "Button %d", btn->gpio);
 
-		if(bits & BUTTON_SHORT_PRESS_BIT) {
-			ESP_LOGI(TAG, "BUTTON_SHORT_PRESS_BIT set");
-//			ESP_LOGI(TAG, "Button %d", button->gpio);
+				/* Execute callback function */
+				if (btn->cbs->short_f.function != NULL) {
+					btn->cbs->short_f.function(btn->cbs->short_f.arg);
+				} else {
+					ESP_LOGW(TAG, "Not defined callback function");
+				}
+				break;
 
-			/* Execute callback function */
-			if(button->short_function.function != NULL) {
-				button->short_function.function(button->short_function.arg);
-			}
-			else {
-				ESP_LOGW(TAG, "Not defined callback function");
-			}
-		}
+			case MEDIUM_PRESS:
+				ESP_LOGI(TAG, "BUTTON_MEDIUM_PRESS_BIT set");
+				// ESP_LOGI(TAG, "Button %d", btn->gpio);
 
-		else if(bits & BUTTON_MEDIUM_PRESS_BIT) {
-			ESP_LOGI(TAG, "BUTTON_MEDIUM_PRESS_BIT set");
-//			ESP_LOGI(TAG, "Button %d", button->gpio);
+				/* Execute callback function */
+				if (btn->cbs->medium_f.function != NULL) {
+					btn->cbs->medium_f.function(btn->cbs->medium_f.arg);
+				} else {
+					ESP_LOGW(TAG, "Not defined callback function");
+				}
+				break;
 
-			/* Execute callback function */
-			/* Execute callback function */
-			if(button->medium_function.function != NULL) {
-				button->medium_function.function(button->medium_function.arg);
-			}
-			else {
-				ESP_LOGW(TAG, "Not defined callback function");
-			}
-		}
-		else if(bits & BUTTON_LONG_PRESS_BIT) {
-			ESP_LOGI(TAG, "BUTTON_LONG_PRESS_BIT set");
-//			ESP_LOGI(TAG, "Button %d", button->gpio);
+			case LONG_PRESS:
+				ESP_LOGI(TAG, "BUTTON_LONG_PRESS_BIT set");
+				// ESP_LOGI(TAG, "Button %d", btn->gpio);
 
-			/* Execute callback function */
-			if(button->long_function.function != NULL) {
-				button->long_function.function(button->long_function.arg);
-			}
-			else {
-				ESP_LOGW(TAG, "Not defined callback function");
-			}
-		}
-		else {
-			ESP_LOGI(TAG, "Button unexpected event");
+				/* Execute callback function */
+				if (btn->cbs->long_f.function != NULL) {
+					btn->cbs->long_f.function(btn->cbs->long_f.arg);
+				} else {
+					ESP_LOGW(TAG, "Not defined callback function");
+				}
+				break;
+
+			default:
+				ESP_LOGI(TAG, "Button unexpected event");
+				break;
 		}
 	}
+	/* An error ocurred while waiting for the queue. Cleaning up. */
+	vQueueDelete(btn->queue);
+	free(btn->cbs);
+	vTaskDelete(NULL);
 }
 
 static void timer_handler(TimerHandle_t timer) {
+	button_t *button = (button_t *)pvTimerGetTimerID(timer);
 
-	button_t * button = (button_t *)pvTimerGetTimerID(timer);
-
-//	ESP_DRAM_LOGI(TAG, "Button: %d, state %s", button->gpio, button->state? "UP_STATE": "DOWN_STATE");
-
-	if(button->state == DOWN_STATE) {
-		if(!gpio_get_level(button->gpio)) {
-			/* Change to next state */
-			button->state = UP_STATE;
-
-			/* Enable button interrupt to detect positive edge */
-			gpio_set_intr_type(button->gpio, GPIO_INTR_POSEDGE);
+	if (button->state == NOT_PRESSED) {
+		if (gpio_get_level(button->gpio) == PRESSED) {
+			ESP_DRAM_LOGI(TAG, "PRESSED");
+			button->state		= PRESSED;
+			button->tick_counter = xTaskGetTickCount();
 		}
-		else {
-//			ESP_DRAM_LOGI(TAG, "POSEDGE very fast");
-			/* Enable button interrupt to detect negative edge */
-			gpio_set_intr_type(button->gpio, GPIO_INTR_NEGEDGE);
-		}
+	} else { /* state == PRESSED */
+		if (gpio_get_level(button->gpio) == NOT_PRESSED) {
+			ESP_DRAM_LOGI(TAG, "RELEASED");
+			button->state = NOT_PRESSED;
 
-	}
-	else {
-		if(gpio_get_level(button->gpio)) {
-			/* Change to next state */
-			button->state = DOWN_STATE;
+			/* Calculate elapsed time pressed on ticks */
+			TickType_t ticks = xTaskGetTickCount() - button->tick_counter;
 
-			/* Enable button interrupt to detect negative edge */
-			gpio_set_intr_type(button->gpio, GPIO_INTR_NEGEDGE);
-		}
-		else {
-			/* Enable button interrupt to detect positive edge */
-			gpio_set_intr_type(button->gpio, GPIO_INTR_POSEDGE);
-//			ESP_DRAM_LOGI(TAG, "NEGEDGE very fast");
+			ESP_DRAM_LOGI(TAG, "Pressed for %d ms", pdTICKS_TO_MS(ticks));
+
+			button->event_fn(button->queue, ticks);
 		}
 	}
 }
 
-/***************************** END OF FILE ************************************/
+static void default_queue(QueueHandle_t queue, TickType_t ticks) {
+	button_press_e btn_event;
 
+	if (ticks < BUTTON_MEDIUM_TICKS) {
+		btn_event = SHORT_PRESS;
+	} else if (ticks < BUTTON_LONG_TICKS) {
+		btn_event = MEDIUM_PRESS;
+	} else {
+		btn_event = LONG_PRESS;
+	}
+
+	/* Copy the event to the queue */
+	xQueueOverwrite(queue, &btn_event);
+}
+
+static void rotary_queue(QueueHandle_t queue, TickType_t ticks) {
+	rotary_encoder_event_t queue_event = {.event_type = BUTTON_EVENT};
+
+	if (ticks < BUTTON_MEDIUM_TICKS) {
+		queue_event.btn_event = SHORT_PRESS;
+	} else if (ticks < BUTTON_LONG_TICKS) {
+		queue_event.btn_event = MEDIUM_PRESS;
+	} else {
+		queue_event.btn_event = LONG_PRESS;
+	}
+
+	/* Copy the event to the queue shared with a rotative encoder */
+	xQueueOverwrite(queue, &queue_event);
+}
+
+/***************************** END OF FILE ************************************/
