@@ -137,21 +137,6 @@ typedef struct {
   *
   * @param me Pointer to button_t structure
   * @param gpio GPIO number to attach button
-  * @param queue Handle of a queue
-  *
-  * @retval
-  * 	- ESP_OK on success
-  * 	- ESP_ERR_INVALID_ARG if the argument is invalid
-  */
-esp_err_t button_init(button_t * const me,
-		gpio_num_t gpio,
-		QueueHandle_t queue);
-
-/**
-  * @brief Initialize a button instance creating a task
-  *
-  * @param me Pointer to button_t structure
-  * @param gpio GPIO number to attach button
   * @param task_priority Button task priority
   * @param task_stack_size Button task stack size
   *
@@ -159,7 +144,7 @@ esp_err_t button_init(button_t * const me,
   * 	- ESP_OK on success
   * 	- ESP_ERR_INVALID_ARG if the argument is invalid
   */
-esp_err_t button_default_init(button_t * const me,
+esp_err_t button_init(button_t * const me,
 		gpio_num_t gpio,
 		UBaseType_t task_priority,
 		uint32_t task_stack_size);
@@ -196,8 +181,8 @@ esp_err_t button_register_cb(button_t * const me,
 esp_err_t button_unregister_cb(button_t * const me, button_press_e press_e);
 
 /**
-  * @brief Initialize a button with a given rotary encoder queue,
-  * see: https://github.com/fherrera124/esp32-rotary-encoder
+  * @brief Initialize a button that interoperates with a rotary encoder.
+  * See: https://github.com/fherrera124/esp32-rotary-encoder
   *
   * @param me Pointer to button_q_t structure
   * @param gpio GPIO number to attach button

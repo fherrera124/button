@@ -53,113 +53,32 @@ static void button_task(void * arg);
 static void timer_handler(TimerHandle_t timer);
 static void default_event_handler(QueueHandle_t queue, TickType_t ticks);
 static void rotary_event_handler(QueueHandle_t queue, TickType_t ticks);
+static esp_err_t _button_init(button_t * const me,
+							  gpio_num_t gpio,
+							  QueueHandle_t queue);
 
 /* Private variables ---------------------------------------------------------*/
 /* Tag for debug */
 static const char * TAG = "button";
 
 /* Exported functions --------------------------------------------------------*/
-esp_err_t button_init(button_t * const me,
+esp_err_t button_init(button_t *const me,
 		gpio_num_t gpio,
-		QueueHandle_t queue) {
-
-	/* Error code variable */
-	esp_err_t ret;
-
-	if(queue != NULL){
-		me->queue = queue;
-	} else {
-		/* No queue handle was passed by parameter, check
-		   if this button instance already has one */
-		if(me->queue == NULL) {
-			ESP_LOGE(TAG, "No queue handle provided");
-
-			return ESP_ERR_INVALID_ARG;
-		}
-	}
-
-	/* Initialize button GPIO */
-	if(gpio < GPIO_NUM_0 || gpio >= GPIO_NUM_MAX) {
-		ESP_LOGE(TAG, "Error in gpio number argument");
-
-		return ESP_ERR_INVALID_ARG;
-	}
-
-	me->gpio = gpio;
-
-	gpio_config_t gpio_conf;
-	gpio_conf.pin_bit_mask = 1ULL << me->gpio;
-	gpio_conf.mode = GPIO_MODE_INPUT;
-
-//	if(mode != FALLING_MODE && mode != RISING_MODE) {
-//		ESP_LOGE(TAG, "Error in mode argument");
-//
-//		return ESP_ERR_INVALID_ARG;
-//	}
-
-	me->mode = FALLING_MODE;
-
-	if(me->mode == FALLING_MODE) {
-		gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-		gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-		me->state = NOT_PRESSED;
-		gpio_conf.intr_type = GPIO_INTR_ANYEDGE;
-	}
-//	else {
-//		gpio_conf.pull_up_en = GPIO_PULLUP_DISABLE;
-//		gpio_conf.pull_down_en = GPIO_PULLDOWN_ENABLE;
-//		me->state = UP_STATE;
-//		gpio_conf.intr_type = GPIO_INTR_POSEDGE;
-//	}
-
-	ret = gpio_config(&gpio_conf);
-
-	if(ret != ESP_OK) {
-		ESP_LOGE(TAG, "Error configuring GPIO");
-
-		return ret;
-	}
-
-	/* Install ISR service */
-	ret = gpio_install_isr_service(0);
-
-	if(ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-		ESP_LOGE(TAG, "Error configuring GPIO ISR service");
-		ESP_LOGE(TAG, "Error code: %d", ret);
-
-		return ret;
-	}
-
-	/* Add ISR handler */
-	ret = gpio_isr_handler_add(me->gpio, isr_handler, &me->timer);
-
-	if(ret != ESP_OK) {
-		ESP_LOGE(TAG, "Error adding GPIO ISR handler");
-
-		return ret;
-	}
-
-	/* Create FreeRTOS software timer to avoid bounce button */
-	me->timer = xTimerCreate("Test timer",
-    		BUTTON_SHORT_TICKS,
-    		pdFALSE,
-    		(void *)me,
-    		timer_handler); /* todo: implement error handler */
-
-	return ESP_OK;
-}
-
-esp_err_t button_default_init(button_t *const me,
-		  gpio_num_t gpio,
-		  UBaseType_t task_priority,
-		  uint32_t task_stack_size) {
+		UBaseType_t task_priority,
+		uint32_t task_stack_size) {
 	ESP_LOGI(TAG, "Initializing button component...");
 
 	/* Error code variable */
 	esp_err_t ret;
 
-	/* Initialize callback struct pointer */
-	me->cbs = NULL;
+	/* Allocate memory for callback struct */
+	me->cbs = calloc(1, sizeof(f_cbs));
+
+	if(me->cbs == NULL) {
+		ESP_LOGE(TAG, "Error allocating memory for callback struct");
+
+		return ESP_ERR_NO_MEM;
+	}
 
 	/* Attach the handler responsible for writing
 	   the press event into the queue */
@@ -175,19 +94,10 @@ esp_err_t button_default_init(button_t *const me,
 	}
 
 	/* Setting up gpio interrupt */
-	ret = button_init(me, gpio, NULL);
+	ret = _button_init(me, gpio, NULL);
 		
 	if(ret != ESP_OK) {
 		return ret;
-	}
-
-	/* Allocate memory for callback struct */
-	me->cbs = calloc(0, sizeof(f_cbs));
-
-	if(me->cbs == NULL) {
-		ESP_LOGE(TAG, "Error allocating memory for callback struct");
-
-		return ESP_ERR_NO_MEM;
 	}
 
 	/* Create RTOS task */
@@ -294,7 +204,7 @@ esp_err_t re_button_init(button_t * me,
 	/* Error code variable */
 	esp_err_t ret;
 
-	ret = button_init(me, gpio, queue);
+	ret = _button_init(me, gpio, queue);
 
 	if(ret != ESP_OK) {
 		return ret;
@@ -308,6 +218,96 @@ esp_err_t re_button_init(button_t * me,
 }
 
 /* Private functions ---------------------------------------------------------*/
+static esp_err_t _button_init(button_t * const me,
+		gpio_num_t gpio,
+		QueueHandle_t queue) {
+
+	/* Error code variable */
+	esp_err_t ret;
+
+	if(queue != NULL){
+		me->queue = queue;
+	} else {
+		/* No queue handle was passed by parameter, check
+		   if this button instance already has one */
+		if(me->queue == NULL) {
+			ESP_LOGE(TAG, "No queue handle provided");
+
+			return ESP_ERR_INVALID_ARG;
+		}
+	}
+
+	/* Initialize button GPIO */
+	if(gpio < GPIO_NUM_0 || gpio >= GPIO_NUM_MAX) {
+		ESP_LOGE(TAG, "Error in gpio number argument");
+
+		return ESP_ERR_INVALID_ARG;
+	}
+
+	me->gpio = gpio;
+
+	gpio_config_t gpio_conf;
+	gpio_conf.pin_bit_mask = 1ULL << me->gpio;
+	gpio_conf.mode = GPIO_MODE_INPUT;
+
+//	if(mode != FALLING_MODE && mode != RISING_MODE) {
+//		ESP_LOGE(TAG, "Error in mode argument");
+//
+//		return ESP_ERR_INVALID_ARG;
+//	}
+
+	me->mode = FALLING_MODE;
+
+	if(me->mode == FALLING_MODE) {
+		gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+		gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+		me->state = NOT_PRESSED;
+		gpio_conf.intr_type = GPIO_INTR_ANYEDGE;
+	}
+//	else {
+//		gpio_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+//		gpio_conf.pull_down_en = GPIO_PULLDOWN_ENABLE;
+//		me->state = UP_STATE;
+//		gpio_conf.intr_type = GPIO_INTR_POSEDGE;
+//	}
+
+	ret = gpio_config(&gpio_conf);
+
+	if(ret != ESP_OK) {
+		ESP_LOGE(TAG, "Error configuring GPIO");
+
+		return ret;
+	}
+
+	/* Install ISR service */
+	ret = gpio_install_isr_service(0);
+
+	if(ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+		ESP_LOGE(TAG, "Error configuring GPIO ISR service");
+		ESP_LOGE(TAG, "Error code: %d", ret);
+
+		return ret;
+	}
+
+	/* Add ISR handler */
+	ret = gpio_isr_handler_add(me->gpio, isr_handler, &me->timer);
+
+	if(ret != ESP_OK) {
+		ESP_LOGE(TAG, "Error adding GPIO ISR handler");
+
+		return ret;
+	}
+
+	/* Create FreeRTOS software timer to avoid bounce button */
+	me->timer = xTimerCreate("Test timer",
+    		BUTTON_SHORT_TICKS,
+    		pdFALSE,
+    		(void *)me,
+    		timer_handler); /* todo: implement error handler */
+
+	return ESP_OK;
+}
+
 static void IRAM_ATTR isr_handler(void *arg) {
 	TimerHandle_t timer = *(TimerHandle_t *)arg;
 
@@ -328,38 +328,38 @@ static void button_task(void *arg) {
 	while (pdTRUE == xQueueReceive(btn->queue, &event, portMAX_DELAY)) {
 		switch (event) {
 			case SHORT_PRESS:
-				ESP_LOGI(TAG, "BUTTON_SHORT_PRESS_BIT set");
+				ESP_LOGI(TAG, "BUTTON_SHORT_PRESS detected");
 				// ESP_LOGI(TAG, "Button %d", btn->gpio);
 
 				/* Execute callback function */
 				if(btn->cbs->short_.function != NULL) {
 					btn->cbs->short_.function(btn->cbs->short_.arg);
 				} else {
-					ESP_LOGW(TAG, "Not defined callback function");
+					ESP_LOGW(TAG, "Callback function not defined");
 				}
 				break;
 
 			case MEDIUM_PRESS:
-				ESP_LOGI(TAG, "BUTTON_MEDIUM_PRESS_BIT set");
+				ESP_LOGI(TAG, "BUTTON_MEDIUM_PRESS detected");
 				// ESP_LOGI(TAG, "Button %d", btn->gpio);
 
 				/* Execute callback function */
 				if(btn->cbs->medium_.function != NULL) {
 					btn->cbs->medium_.function(btn->cbs->medium_.arg);
 				} else {
-					ESP_LOGW(TAG, "Not defined callback function");
+					ESP_LOGW(TAG, "Callback function not defined");
 				}
 				break;
 
 			case LONG_PRESS:
-				ESP_LOGI(TAG, "BUTTON_LONG_PRESS_BIT set");
+				ESP_LOGI(TAG, "BUTTON_LONG_PRESS detected");
 				// ESP_LOGI(TAG, "Button %d", btn->gpio);
 
 				/* Execute callback function */
 				if(btn->cbs->long_f.function != NULL) {
 					btn->cbs->long_f.function(btn->cbs->long_f.arg);
 				} else {
-					ESP_LOGW(TAG, "Not defined callback function");
+					ESP_LOGW(TAG, "Callback function not defined");
 				}
 				break;
 

@@ -61,11 +61,11 @@ ESP_ERROR_CHECK(button_init(&button2, /* button 2 instance */
 6. Register the callback functions defined in 3
 ```c
  /* Register button1 callback for short press without argument */
-button_register_cb(&button1, SHORT_TIME, button1_cb, NULL);
+button_register_cb(&button1, SHORT_PRESS, button1_cb, NULL);
  
  /* Register button2 callbacks for medium and long press with different arguments */
-button_register_cb(&button2, MEDIUM_TIME, button2_cb, "Button 2 medium press");
-button_register_cb(&button2, LONG_TIME, button2_cb, "Button 2 long press");
+button_register_cb(&button2, MEDIUM_PRESS, button2_cb, "Button 2 medium press");
+button_register_cb(&button2, LONG_PRESS, button2_cb, "Button 2 long press");
 ```
 
 ## License
