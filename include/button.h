@@ -62,9 +62,9 @@ typedef struct {
 } button_function_t;
 
 typedef struct {
-  button_function_t short_f;  /*!< Short press callback function structure */
-  button_function_t medium_f; /*!< Medium press callback function structure */
-  button_function_t long_f;		/*!< Long press callback function structure */
+	button_function_t short_;	/*!< Short press callback function structure */
+	button_function_t medium_;	/*!< Medium press callback function structure */
+	button_function_t long_f;	/*!< Long press callback function structure */
 } f_cbs;
 
 typedef enum {
@@ -87,16 +87,19 @@ typedef enum {
 	LONG_PRESS
 } button_press_e;
 
+typedef void (*event_fn)(QueueHandle_t, TickType_t);
+
 /* Struct definition of a button */
 typedef struct {
-  button_state_e state;			/*!< Button state */
-	button_mode_e mode;				/*!< Button mode activation */
-	gpio_num_t gpio;					/*!< Button GPIO number */
+	button_state_e state;		  /*!< Button state */
+	button_mode_e mode;			  /*!< Button mode activation */
+	gpio_num_t gpio;			    /*!< Button GPIO number */
 	TickType_t tick_counter;	/*!< Tick counter */
-	TimerHandle_t timer;			/*!< Handle of the software timer, used for debouncing */
-	QueueHandle_t queue;			/*!< Handle of the event queue */
-  f_cbs * cbs;							/*!< Optional pointer to callback function struct*/
-  void (*event_fn)(QueueHandle_t, TickType_t); /*!< Callback function responsible for writing into the queue */
+	TimerHandle_t timer;		  /*!< Handle of the software timer, used for debouncing */
+	QueueHandle_t queue;		  /*!< Handle of the event queue */
+	f_cbs * cbs;				      /*!< Optional pointer to callback function struct*/
+	event_fn event_handler;   /*!< Callback function responsible for
+                                 writing button events into the queue */
 } button_t;
 
 /* Exported constants --------------------------------------------------------*/
