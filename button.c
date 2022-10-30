@@ -36,7 +36,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "button.h"
 #include "esp_log.h"
-#include "rotary_encoder.h" /* esp32-rotary-encoder component */
+#include "rotary_encoder.h" /* header of esp32-rotary-encoder component */
 
 /* External variables --------------------------------------------------------*/
 
@@ -54,8 +54,8 @@ static void timer_handler(TimerHandle_t timer);
 static void default_event_handler(QueueHandle_t queue, TickType_t ticks);
 static void rotary_event_handler(QueueHandle_t queue, TickType_t ticks);
 static esp_err_t _button_init(button_t * const me,
-							  gpio_num_t gpio,
-							  QueueHandle_t queue);
+				gpio_num_t gpio,
+				QueueHandle_t queue);
 
 /* Private variables ---------------------------------------------------------*/
 /* Tag for debug */
@@ -101,16 +101,16 @@ esp_err_t button_init(button_t *const me,
 	}
 
 	/* Create RTOS task */
-    if(pdPASS != xTaskCreate(button_task,
-    	"Button Task",
+	if(pdPASS != xTaskCreate(button_task,
+		"Button Task",
 		task_stack_size,
 		(void *)me,
 		task_priority,
 		NULL)) {
-    	ESP_LOGE(TAG, "Error allocating memory to create task");
+		ESP_LOGE(TAG, "Error allocating memory to create task");
 
-    	return ESP_ERR_NO_MEM;
-    }
+		return ESP_ERR_NO_MEM;
+	}
 
 	/* Return error code */
 	return ret;
@@ -161,8 +161,6 @@ esp_err_t button_register_cb(button_t *const me,
 }
 
 esp_err_t button_unregister_cb(button_t * const me, button_press_e press_e) {
-	ESP_LOGI(TAG, "Initializing button component...");
-
 	if(me->cbs == NULL) {
 		ESP_LOGW(TAG, "No callback struct instance on this button. Skipping.");
 		return ESP_ERR_NOT_SUPPORTED;
@@ -193,6 +191,7 @@ esp_err_t button_unregister_cb(button_t * const me, button_press_e press_e) {
 			ESP_LOGI(TAG, "Error in arg argument");
 			return ESP_ERR_INVALID_ARG;
 	}
+	ESP_LOGI(TAG, "Callback unregistered");
 
 	return ESP_OK;
 }
