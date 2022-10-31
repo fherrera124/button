@@ -33,9 +33,7 @@
   ******************************************************************************
   */
 
-/* Define to prevent recursive inclusion -------------------------------------*/
-#ifndef BUTTON_H_
-#define BUTTON_H_
+#pragma once
 
 #ifdef __cplusplus
 extern "C" {
@@ -199,7 +197,5 @@ esp_err_t re_button_init(button_t * const me,
 #ifdef __cplusplus
 }
 #endif
-
-#endif /* BUTTON_H_ */
 
 /***************************** END OF FILE ************************************/
