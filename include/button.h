@@ -115,20 +115,6 @@ typedef struct {
 #define pdTICKS_TO_MS(xTicks) ((TickType_t)((uint64_t)(xTicks)*1000 / configTICK_RATE_HZ))
 #endif
 
-/* Diferent macros for printing inside an ISR routine */
-#ifndef ESP_DRAM_LOGI
-#define ESP_DRAM_LOGI ESP_EARLY_LOGI
-#endif
-#ifndef ESP_DRAM_LOGE
-#define ESP_DRAM_LOGE ESP_EARLY_LOGE
-#endif
-#ifndef ESP_DRAM_LOGD
-#define ESP_DRAM_LOGD ESP_EARLY_LOGD
-#endif
-#ifndef ESP_DRAM_LOGW
-#define ESP_DRAM_LOGW ESP_EARLY_LOGW
-#endif
-
 /* Exported functions prototypes ---------------------------------------------*/
 /**
  * @brief Initialize a button instance
