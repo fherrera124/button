@@ -1,0 +1,7 @@
+## IDF Component Manager Manifest File
+dependencies:
+  ## Required IDF version
+  idf: ">=5.0"
+  esp32_rotary_encoder:
+    git: https://github.com/fherrera124/esp32_rotary_encoder
+    version: fce8fe9dfe4b41ef2e5ccf6f8badf26751a419be
